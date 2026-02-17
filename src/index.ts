@@ -1,24 +1,17 @@
-import express, { Request, Response, Application } from 'express';
+import { createServer } from 'http'
+import { createApp } from './app'
+import { env } from './config/env'
+import { createSocketServer } from './socket/socket.server'
 
-const app: Application = express();
-const PORT = process.env.PORT || 4000;
+// Punto de entrada del servidor Node.js.
+// Aquí se inicia HTTP, Socket.IO y cualquier proceso de bootstrap.
+const app = createApp()
+const httpServer = createServer(app)
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+createSocketServer(httpServer)
 
-// Routes
-app.get('/', (req: Request, res: Response) => {
-  res.json({ message: 'Welcome to Color Caos Backend API' });
-});
+httpServer.listen(env.port, () => {
+  console.log(`Server is running on http://localhost:${env.port}`)
+})
 
-app.get('/health', (req: Request, res: Response) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
-});
-
-export default app;
+export { app, httpServer }
