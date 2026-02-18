@@ -5,4 +5,7 @@ export type PlayerId = string
 export interface Player {
   id: PlayerId
   name: string
+  currentRoomCode: string | null
+  createdAt: number
+  lastActivityAt: number
 }
