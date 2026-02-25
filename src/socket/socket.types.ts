@@ -1,7 +1,7 @@
 // Tipos de eventos y payloads de Socket.IO.
 // Definir aquí contratos cliente-servidor para tiempo real.
 
-import type { Room, RoomWithPlayers } from '../modules/rooms/room.types'
+import type { GameMode, Room, RoomWithPlayers } from '../modules/rooms/room.types'
 import type { Player } from '../modules/players/player.types'
 
 // ============================================
@@ -108,7 +108,7 @@ export interface ClientToServerEvents {
 
   // Salas - Actualizar configuración de la sala
   'room:update-settings': (
-    payload: { roomCode: string; maxPlayers: number },
+    payload: { roomCode: string; maxPlayers: number; hostPlayerId: string; gameMode: GameMode },
     callback?: (response: {
       success: boolean
       room?: RoomWithPlayers
@@ -123,6 +123,27 @@ export interface ClientToServerEvents {
       success: boolean
       room?: RoomWithPlayers | null
       wasDeleted?: boolean
+      error?: string
+    }) => void
+  ) => void
+
+  // Juego - Iniciar partida (solo host)
+  'game:start': (
+    payload: { roomCode: string; hostPlayerId: string },
+    callback?: (response: {
+      success: boolean
+      room?: RoomWithPlayers
+      error?: string
+    }) => void
+  ) => void
+
+  // Juego - Enviar respuesta de ronda
+  'game:submit-answer': (
+    payload: { roomCode: string; playerId: string; color: string },
+    callback?: (response: {
+      success: boolean
+      accepted?: boolean
+      room?: RoomWithPlayers
       error?: string
     }) => void
   ) => void

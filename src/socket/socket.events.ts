@@ -1,7 +1,9 @@
 import type { Socket } from 'socket.io'
 import type { Server } from 'socket.io'
 import type { ClientToServerEvents, ServerToClientEvents } from './socket.types'
+import type { GameService } from '../modules/game/game.service'
 import { createRoom, joinRoom, leaveRoom, getRoomByCodeWithPlayers, updateRoomSettings, kickPlayerFromRoom } from '../modules/rooms/room.service'
+import { GameMode } from '../modules/rooms/room.types'
 import { createPlayer, getPlayerById, updatePlayerRoom } from '../modules/players/player.service'
 
 // ============================================
@@ -13,6 +15,7 @@ import { createPlayer, getPlayerById, updatePlayerRoom } from '../modules/player
 export const registerSocketEvents = (
   socket: Socket<ClientToServerEvents, ServerToClientEvents>,
   io: Server<ClientToServerEvents, ServerToClientEvents>,
+  gameService: GameService,
 ) => {
   console.log(`[Socket] Cliente conectado: ${socket.id}`)
 
@@ -396,6 +399,7 @@ export const registerSocketEvents = (
 
       // PASO 2: Si la sala fue eliminada, solo limpiar y responder
       if (wasDeleted) {
+        gameService.clearRoomTimers(roomCode)
         socket.leave(roomCode)
         delete socket.data.roomCode
         delete socket.data.playerId
@@ -463,7 +467,7 @@ export const registerSocketEvents = (
     try {
       console.log(`[room:update-settings] Solicitud recibida de cliente: ${socket.id}`)
 
-      const { roomCode, maxPlayers } = payload
+      const { roomCode, maxPlayers, hostPlayerId, gameMode } = payload
 
       if (!roomCode) {
         throw new Error('El código de la sala es requerido')
@@ -473,8 +477,20 @@ export const registerSocketEvents = (
         throw new Error('El número máximo de jugadores es requerido')
       }
 
+      if (!hostPlayerId) {
+        throw new Error('El ID del anfitrión es requerido')
+      }
+
+      if (![GameMode.MATCH_TARGET, GameMode.AVOID_TARGET].includes(gameMode)) {
+        throw new Error('El modo de juego es inválido')
+      }
+
+      if (!socket.data.playerId || socket.data.playerId !== hostPlayerId) {
+        throw new Error('Sesión inválida para actualizar configuración')
+      }
+
       // PASO 1: Llamar al servicio que actualiza la configuración de la sala
-      const room = await updateRoomSettings(roomCode, maxPlayers)
+      const room = await updateRoomSettings(roomCode, maxPlayers, hostPlayerId, gameMode)
 
       console.log(`[room:update-settings] Configuración de sala ${roomCode} actualizada exitosamente`)
 
@@ -558,7 +574,9 @@ export const registerSocketEvents = (
         }
       }
 
-      if (!wasDeleted && room) {
+      if (wasDeleted) {
+        gameService.clearRoomTimers(roomCode)
+      } else if (room) {
         io.to(roomCode).emit('room:updated', { room })
       }
 
@@ -591,6 +609,94 @@ export const registerSocketEvents = (
   })
 
   // ============================================
+  // EVENTO: game:start
+  // ============================================
+  socket.on('game:start', async (payload, callback) => {
+    try {
+      const { roomCode, hostPlayerId } = payload
+
+      if (!roomCode) {
+        throw new Error('El código de la sala es requerido')
+      }
+
+      if (!hostPlayerId) {
+        throw new Error('El ID del anfitrión es requerido')
+      }
+
+      if (!socket.data.playerId || socket.data.playerId !== hostPlayerId) {
+        throw new Error('Sesión inválida para iniciar la partida')
+      }
+
+      const room = await gameService.startGame(roomCode, hostPlayerId)
+
+      if (callback) {
+        callback({ success: true, room })
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido'
+      socket.emit('error', {
+        message: `Error al iniciar partida: ${errorMessage}`,
+        code: 'START_GAME_ERROR',
+      })
+
+      if (callback) {
+        callback({
+          success: false,
+          error: errorMessage,
+        })
+      }
+    }
+  })
+
+  // ============================================
+  // EVENTO: game:submit-answer
+  // ============================================
+  socket.on('game:submit-answer', async (payload, callback) => {
+    try {
+      const { roomCode, playerId, color } = payload
+
+      if (!roomCode) {
+        throw new Error('El código de la sala es requerido')
+      }
+
+      if (!playerId) {
+        throw new Error('El ID del jugador es requerido')
+      }
+
+      if (!color) {
+        throw new Error('El color es requerido')
+      }
+
+      if (!socket.data.playerId || socket.data.playerId !== playerId) {
+        throw new Error('Sesión inválida para enviar respuesta')
+      }
+
+      const { accepted, room } = await gameService.submitAnswer(roomCode, playerId, color)
+
+      if (callback) {
+        callback({
+          success: true,
+          accepted,
+          room,
+        })
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido'
+      socket.emit('error', {
+        message: `Error al responder ronda: ${errorMessage}`,
+        code: 'SUBMIT_ANSWER_ERROR',
+      })
+
+      if (callback) {
+        callback({
+          success: false,
+          error: errorMessage,
+        })
+      }
+    }
+  })
+
+  // ============================================
   // EVENTO: disconnect
   // ============================================
   // Se ejecuta cuando el cliente se desconecta
@@ -608,6 +714,10 @@ export const registerSocketEvents = (
 
         // Actualizar la sala actual del jugador en Redis
         await updatePlayerRoom(playerId, null)
+
+        if (wasDeleted) {
+          gameService.clearRoomTimers(roomCode)
+        }
 
         // Notificar a los jugadores restantes ANTES de que el socket se desconecte completamente
         if (!wasDeleted && room) {

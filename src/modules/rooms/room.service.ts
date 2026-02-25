@@ -1,6 +1,6 @@
 import { redis } from '../../config/redis'
-import type { Room, RoomCode, RoomId, RoomWithPlayers, RoomPlayer } from './room.types'
-import { RoomStatus } from './room.types'
+import type { Room, RoomCode, RoomId, RoomWithPlayers, RoomPlayer, GameConfig, GameState } from './room.types'
+import { GameMode, GamePhase, RoomStatus } from './room.types'
 import { nanoid } from 'nanoid'
 import { ROOM_TTL_SECONDS } from '../../config/ttl.constants'
 import { getPlayerById } from '../players/player.service'
@@ -10,6 +10,37 @@ import { getPlayerById } from '../players/player.service'
 
 const ROOM_KEY_PREFIX = 'room:'
 const ROOM_CODE_KEY_PREFIX = 'room:code:'
+
+export const DEFAULT_GAME_CONFIG: GameConfig = {
+  preGameCountdownSeconds: 5,
+  totalRounds: 6,
+  cardsPerRound: 5,
+  answerWindowSeconds: 2,
+  scoringWindowSeconds: 3,
+  availableColors: ['red', 'blue', 'green', 'yellow', 'orange', 'pink', 'purple', 'cyan'],
+  mode: GameMode.MATCH_TARGET,
+}
+
+const createIdleGameState = (): GameState => ({
+  phase: GamePhase.IDLE,
+  currentRound: 0,
+  targetColor: null,
+  cards: [],
+  startedAt: null,
+  phaseEndsAt: null,
+  roundAnswers: {},
+})
+
+const resetFinishedGamePresentation = (room: Room): void => {
+  if (room.status === RoomStatus.WAITING && room.gameState.phase === GamePhase.FINISHED) {
+    room.gameState.phase = GamePhase.IDLE
+    room.gameState.currentRound = 0
+    room.gameState.targetColor = null
+    room.gameState.cards = []
+    room.gameState.phaseEndsAt = null
+    room.gameState.roundAnswers = {}
+  }
+}
 
 /**
  * Genera un código de sala único de 6 caracteres alfanuméricos en mayúsculas
@@ -65,6 +96,7 @@ const populateRoomWithPlayers = async (room: Room): Promise<RoomWithPlayers> => 
   return {
     ...room,
     players,
+    serverNow: Date.now(),
   }
 }
 
@@ -84,6 +116,15 @@ export const createRoom = async (hostId: string, maxPlayers = 8): Promise<RoomWi
     maxPlayers,
     createdAt: Date.now(),
     startedAt: null,
+    gameConfig: {
+      ...DEFAULT_GAME_CONFIG,
+      availableColors: [...DEFAULT_GAME_CONFIG.availableColors],
+    },
+    gameState: createIdleGameState(),
+    scoresByPlayerId: {
+      [hostId]: 0,
+    },
+    completedGames: 0,
   }
 
   // Guardar la sala en Redis con TTL (Upstash serializa automáticamente)
@@ -128,6 +169,15 @@ export const getRoomByCode = async (code: RoomCode): Promise<Room | null> => {
 }
 
 /**
+ * Guarda una sala en Redis renovando el TTL
+ */
+export const saveRoom = async (room: Room): Promise<void> => {
+  await redis.set(`${ROOM_KEY_PREFIX}${room.id}`, room, {
+    ex: ROOM_TTL_SECONDS,
+  })
+}
+
+/**
  * Obtiene una sala por su código con datos de jugadores
  */
 export const getRoomByCodeWithPlayers = async (code: RoomCode): Promise<RoomWithPlayers | null> => {
@@ -163,11 +213,13 @@ export const joinRoom = async (roomCode: RoomCode, playerId: string): Promise<Ro
 
   // Agregar el jugador a la sala
   room.playerIds.push(playerId)
+  if (room.scoresByPlayerId[playerId] === undefined) {
+    room.scoresByPlayerId[playerId] = 0
+  }
+  resetFinishedGamePresentation(room)
 
   // Actualizar la sala en Redis (Upstash serializa automáticamente)
-  await redis.set(`${ROOM_KEY_PREFIX}${room.id}`, room, {
-    ex: ROOM_TTL_SECONDS,
-  })
+  await saveRoom(room)
 
   console.log(`[RoomService] Jugador ${playerId} se unió a la sala ${room.code}`)
 
@@ -214,9 +266,7 @@ export const leaveRoom = async (roomCode: RoomCode, playerId: string): Promise<{
   }
 
   // Actualizar la sala en Redis
-  await redis.set(`${ROOM_KEY_PREFIX}${room.id}`, room, {
-    ex: ROOM_TTL_SECONDS,
-  })
+  await saveRoom(room)
 
   console.log(`[RoomService] Jugador ${playerId} salió de la sala ${room.code}`)
 
@@ -229,13 +279,19 @@ export const leaveRoom = async (roomCode: RoomCode, playerId: string): Promise<{
  */
 export const updateRoomSettings = async (
   roomCode: RoomCode, 
-  maxPlayers: number
+  maxPlayers: number,
+  hostPlayerId: string,
+  gameMode: GameMode
 ): Promise<RoomWithPlayers> => {
   // Obtener la sala por código
   const room = await getRoomByCode(roomCode)
   
   if (!room) {
     throw new Error('La sala no existe o ha expirado')
+  }
+
+  if (room.hostId !== hostPlayerId) {
+    throw new Error('Solo el anfitrión puede actualizar la configuración')
   }
 
   // Validar maxPlayers
@@ -248,13 +304,16 @@ export const updateRoomSettings = async (
     throw new Error(`No puedes reducir el límite por debajo del número actual de jugadores (${room.playerIds.length})`)
   }
 
+  if (![GameMode.MATCH_TARGET, GameMode.AVOID_TARGET].includes(gameMode)) {
+    throw new Error('Modo de juego inválido')
+  }
+
   // Actualizar la configuración
   room.maxPlayers = maxPlayers
+  room.gameConfig.mode = gameMode
 
   // Actualizar la sala en Redis
-  await redis.set(`${ROOM_KEY_PREFIX}${room.id}`, room, {
-    ex: ROOM_TTL_SECONDS,
-  })
+  await saveRoom(room)
 
   console.log(`[RoomService] Configuración de sala ${room.code} actualizada: maxPlayers=${maxPlayers}`)
 
