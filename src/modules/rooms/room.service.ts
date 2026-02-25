@@ -224,6 +224,73 @@ export const leaveRoom = async (roomCode: RoomCode, playerId: string): Promise<{
   return { room: updatedRoom, wasDeleted: false, newHostId }
 }
 
+/**
+ * Actualiza la configuración de una sala (solo el host puede hacerlo)
+ */
+export const updateRoomSettings = async (
+  roomCode: RoomCode, 
+  maxPlayers: number
+): Promise<RoomWithPlayers> => {
+  // Obtener la sala por código
+  const room = await getRoomByCode(roomCode)
+  
+  if (!room) {
+    throw new Error('La sala no existe o ha expirado')
+  }
+
+  // Validar maxPlayers
+  if (maxPlayers < 2 || maxPlayers > 20) {
+    throw new Error('El número de jugadores debe estar entre 2 y 20')
+  }
+
+  // Validar que el nuevo maxPlayers no sea menor que el número actual de jugadores
+  if (maxPlayers < room.playerIds.length) {
+    throw new Error(`No puedes reducir el límite por debajo del número actual de jugadores (${room.playerIds.length})`)
+  }
+
+  // Actualizar la configuración
+  room.maxPlayers = maxPlayers
+
+  // Actualizar la sala en Redis
+  await redis.set(`${ROOM_KEY_PREFIX}${room.id}`, room, {
+    ex: ROOM_TTL_SECONDS,
+  })
+
+  console.log(`[RoomService] Configuración de sala ${room.code} actualizada: maxPlayers=${maxPlayers}`)
+
+  return populateRoomWithPlayers(room)
+}
+
+/**
+ * Expulsa a un jugador de una sala (solo el host puede hacerlo)
+ */
+export const kickPlayerFromRoom = async (
+  roomCode: RoomCode,
+  hostPlayerId: string,
+  targetPlayerId: string
+): Promise<{ room: RoomWithPlayers | null; wasDeleted: boolean }> => {
+  const room = await getRoomByCode(roomCode)
+
+  if (!room) {
+    throw new Error('La sala no existe o ha expirado')
+  }
+
+  if (room.hostId !== hostPlayerId) {
+    throw new Error('Solo el anfitrión puede expulsar jugadores')
+  }
+
+  if (targetPlayerId === hostPlayerId) {
+    throw new Error('El anfitrión no puede expulsarse a sí mismo')
+  }
+
+  if (!room.playerIds.includes(targetPlayerId)) {
+    throw new Error('El jugador no está en esta sala')
+  }
+
+  const { room: updatedRoom, wasDeleted } = await leaveRoom(roomCode, targetPlayerId)
+  return { room: updatedRoom, wasDeleted }
+}
+
 export const createRoomService = () => {
   return {
     createRoom,
@@ -232,5 +299,6 @@ export const createRoomService = () => {
     getRoomByCodeWithPlayers,
     joinRoom,
     leaveRoom,
+    kickPlayerFromRoom,
   }
 }

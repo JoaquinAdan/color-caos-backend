@@ -30,6 +30,12 @@ export interface ServerToClientEvents {
   'room:updated': (payload: {
     room: RoomWithPlayers
   }) => void
+
+  // Salas - Notificación cuando un jugador fue expulsado por el host
+  'room:kicked': (payload: {
+    roomCode: string
+    message: string
+  }) => void
   
   // Error genérico
   'error': (payload: { message: string; code?: string }) => void
@@ -72,7 +78,7 @@ export interface ClientToServerEvents {
 
   // Salas - Obtener una sala por código
   'room:get': (
-    payload: { roomCode: string },
+    payload: { roomCode: string; playerId?: string },
     callback?: (response: {
       success: boolean
       room?: RoomWithPlayers | null
@@ -95,6 +101,27 @@ export interface ClientToServerEvents {
     payload: { roomCode: string; playerId: string },
     callback?: (response: {
       success: boolean
+      wasDeleted?: boolean
+      error?: string
+    }) => void
+  ) => void
+
+  // Salas - Actualizar configuración de la sala
+  'room:update-settings': (
+    payload: { roomCode: string; maxPlayers: number },
+    callback?: (response: {
+      success: boolean
+      room?: RoomWithPlayers
+      error?: string
+    }) => void
+  ) => void
+
+  // Salas - Expulsar un jugador (solo host)
+  'room:kick': (
+    payload: { roomCode: string; hostPlayerId: string; targetPlayerId: string },
+    callback?: (response: {
+      success: boolean
+      room?: RoomWithPlayers | null
       wasDeleted?: boolean
       error?: string
     }) => void

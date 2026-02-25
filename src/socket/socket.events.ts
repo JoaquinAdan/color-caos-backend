@@ -1,6 +1,7 @@
 import type { Socket } from 'socket.io'
+import type { Server } from 'socket.io'
 import type { ClientToServerEvents, ServerToClientEvents } from './socket.types'
-import { createRoom, joinRoom, leaveRoom, getRoomByCodeWithPlayers } from '../modules/rooms/room.service'
+import { createRoom, joinRoom, leaveRoom, getRoomByCodeWithPlayers, updateRoomSettings, kickPlayerFromRoom } from '../modules/rooms/room.service'
 import { createPlayer, getPlayerById, updatePlayerRoom } from '../modules/players/player.service'
 
 // ============================================
@@ -11,6 +12,7 @@ import { createPlayer, getPlayerById, updatePlayerRoom } from '../modules/player
 
 export const registerSocketEvents = (
   socket: Socket<ClientToServerEvents, ServerToClientEvents>,
+  io: Server<ClientToServerEvents, ServerToClientEvents>,
 ) => {
   console.log(`[Socket] Cliente conectado: ${socket.id}`)
 
@@ -44,6 +46,7 @@ export const registerSocketEvents = (
 
       // PASO 2: Emitir evento al cliente con el resultado
       // Esto envía la respuesta en tiempo real
+      socket.data.playerId = player.id
       socket.emit('player:created', { player })
 
       // PASO 3: Si el cliente envió un callback, responder también por ahí
@@ -101,6 +104,9 @@ export const registerSocketEvents = (
       const player = await getPlayerById(playerId)
 
       const exists = player !== null
+      if (exists) {
+        socket.data.playerId = playerId
+      }
 
       console.log(`[player:get] Jugador ${playerId}: ${exists ? 'encontrado' : 'no existe'}`)
 
@@ -229,7 +235,7 @@ export const registerSocketEvents = (
     try {
       console.log(`[room:get] Solicitud recibida de cliente: ${socket.id}`)
 
-      const { roomCode } = payload
+      const { roomCode, playerId } = payload
 
       if (!roomCode) {
         throw new Error('El código de la sala es requerido')
@@ -237,6 +243,13 @@ export const registerSocketEvents = (
 
       // PASO 1: Buscar la sala en Redis
       const room = await getRoomByCodeWithPlayers(roomCode)
+
+      // Si el cliente indica playerId y sigue dentro de la sala, re-adjuntar su socket.
+      if (room && playerId && room.playerIds.includes(playerId)) {
+        socket.join(roomCode)
+        socket.data.roomCode = roomCode
+        socket.data.playerId = playerId
+      }
 
       console.log(`[room:get] Sala ${roomCode}: ${room ? 'encontrada' : 'no existe'}`)
 
@@ -381,16 +394,12 @@ export const registerSocketEvents = (
       // PASO 1.5: Actualizar la sala actual del jugador en Redis (poner en null)
       await updatePlayerRoom(playerId, null)
 
-      // PASO 2: Remover el socket de la sala de Socket.IO
-      socket.leave(roomCode)
-      console.log(`[room:leave] Socket ${socket.id} removido de la sala ${roomCode}`)
-
-      // Limpiar referencia de la sala en el socket
-      delete socket.data.roomCode
-      delete socket.data.playerId
-
-      // PASO 3: Si la sala fue eliminada, solo responder al callback
+      // PASO 2: Si la sala fue eliminada, solo limpiar y responder
       if (wasDeleted) {
+        socket.leave(roomCode)
+        delete socket.data.roomCode
+        delete socket.data.playerId
+        
         if (callback) {
           callback({ success: true, wasDeleted: true })
         }
@@ -398,11 +407,19 @@ export const registerSocketEvents = (
         return
       }
 
-      // PASO 4: Si la sala aún existe, notificar a los jugadores restantes
+      // PASO 3: Si la sala aún existe, notificar a los jugadores restantes ANTES de salir
       if (room) {
         socket.to(roomCode).emit('room:updated', { room })
         console.log(`[room:leave] Evento room:updated enviado a sala ${roomCode}`)
       }
+
+      // PASO 4: Ahora sí, remover el socket de la sala de Socket.IO
+      socket.leave(roomCode)
+      console.log(`[room:leave] Socket ${socket.id} removido de la sala ${roomCode}`)
+
+      // Limpiar referencia de la sala en el socket
+      delete socket.data.roomCode
+      delete socket.data.playerId
 
       // PASO 5: Responder al callback
       if (callback) {
@@ -433,6 +450,147 @@ export const registerSocketEvents = (
   })
 
   // ============================================
+  // EVENTO: room:update-settings
+  // ============================================
+  // FLUJO COMPLETO:
+  // 1. Cliente emite 'room:update-settings' con el código de sala y nueva configuración
+  // 2. Backend valida que la sala exista
+  // 3. Actualiza la configuración (maxPlayers, etc.)
+  // 4. Notifica a todos los jugadores de la sala sobre el cambio
+  // ============================================
+  
+  socket.on('room:update-settings', async (payload, callback) => {
+    try {
+      console.log(`[room:update-settings] Solicitud recibida de cliente: ${socket.id}`)
+
+      const { roomCode, maxPlayers } = payload
+
+      if (!roomCode) {
+        throw new Error('El código de la sala es requerido')
+      }
+
+      if (maxPlayers === undefined) {
+        throw new Error('El número máximo de jugadores es requerido')
+      }
+
+      // PASO 1: Llamar al servicio que actualiza la configuración de la sala
+      const room = await updateRoomSettings(roomCode, maxPlayers)
+
+      console.log(`[room:update-settings] Configuración de sala ${roomCode} actualizada exitosamente`)
+
+      // PASO 2: Notificar a todos los jugadores en la sala (incluyendo el que la actualizó)
+      socket.to(roomCode).emit('room:updated', { room })
+      socket.emit('room:updated', { room })
+      console.log(`[room:update-settings] Evento room:updated enviado a sala ${roomCode}`)
+
+      // PASO 3: Responder al callback
+      if (callback) {
+        callback({ success: true, room })
+      }
+
+      console.log(`[room:update-settings] Respuesta enviada al cliente ${socket.id}`)
+    } catch (error) {
+      // MANEJO DE ERRORES
+      console.error(`[room:update-settings] Error:`, error)
+
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido'
+
+      // Emitir evento de error al cliente
+      socket.emit('error', {
+        message: `Error al actualizar configuración: ${errorMessage}`,
+        code: 'UPDATE_SETTINGS_ERROR',
+      })
+
+      // Responder también en el callback si existe
+      if (callback) {
+        callback({
+          success: false,
+          error: errorMessage,
+        })
+      }
+    }
+  })
+
+  // ============================================
+  // EVENTO: room:kick
+  // ============================================
+  // FLUJO COMPLETO:
+  // 1. Host emite 'room:kick' con roomCode, hostPlayerId y targetPlayerId
+  // 2. Backend valida permisos y remueve al jugador de la sala en Redis
+  // 3. Saca el/los sockets del jugador expulsado de la sala de Socket.IO
+  // 4. Notifica al jugador expulsado y actualiza a jugadores restantes
+  // ============================================
+  socket.on('room:kick', async (payload, callback) => {
+    try {
+      console.log(`[room:kick] Solicitud recibida de cliente: ${socket.id}`)
+
+      const { roomCode, hostPlayerId, targetPlayerId } = payload
+
+      if (!roomCode) {
+        throw new Error('El código de la sala es requerido')
+      }
+
+      if (!hostPlayerId) {
+        throw new Error('El ID del anfitrión es requerido')
+      }
+
+      if (!targetPlayerId) {
+        throw new Error('El ID del jugador a expulsar es requerido')
+      }
+
+      const actorPlayerId = socket.data.playerId
+      if (!actorPlayerId || actorPlayerId !== hostPlayerId) {
+        throw new Error('Sesión inválida para expulsar jugadores')
+      }
+
+      const { room, wasDeleted } = await kickPlayerFromRoom(roomCode, actorPlayerId, targetPlayerId)
+      await updatePlayerRoom(targetPlayerId, null)
+
+      // Buscar todas las conexiones activas del jugador expulsado y removerlas de la sala.
+      for (const clientSocket of io.sockets.sockets.values()) {
+        if (clientSocket.data.playerId === targetPlayerId && clientSocket.data.roomCode === roomCode) {
+          clientSocket.leave(roomCode)
+          delete clientSocket.data.roomCode
+          clientSocket.emit('room:kicked', {
+            roomCode,
+            message: 'Has sido expulsado de la sala por el anfitrión',
+          })
+        }
+      }
+
+      if (!wasDeleted && room) {
+        io.to(roomCode).emit('room:updated', { room })
+      }
+
+      if (callback) {
+        callback({
+          success: true,
+          room,
+          wasDeleted,
+        })
+      }
+
+      console.log(`[room:kick] Jugador ${targetPlayerId} expulsado de la sala ${roomCode}`)
+    } catch (error) {
+      console.error(`[room:kick] Error:`, error)
+
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido'
+
+      socket.emit('error', {
+        message: `Error al expulsar jugador: ${errorMessage}`,
+        code: 'KICK_PLAYER_ERROR',
+      })
+
+      if (callback) {
+        callback({
+          success: false,
+          error: errorMessage,
+        })
+      }
+    }
+  })
+
+  // ============================================
   // EVENTO: disconnect
   // ============================================
   // Se ejecuta cuando el cliente se desconecta
@@ -451,8 +609,8 @@ export const registerSocketEvents = (
         // Actualizar la sala actual del jugador en Redis
         await updatePlayerRoom(playerId, null)
 
+        // Notificar a los jugadores restantes ANTES de que el socket se desconecte completamente
         if (!wasDeleted && room) {
-          // Notificar a los jugadores restantes
           socket.to(roomCode).emit('room:updated', { room })
           console.log(`[disconnect] Sala ${roomCode} actualizada tras desconexión`)
         } else if (wasDeleted) {

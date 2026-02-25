@@ -28,7 +28,7 @@ export const createSocketServer = (httpServer: HttpServer) => {
 
     // PASO 3: Registrar todos los eventos personalizados
     // Esto conecta los eventos del cliente con la lógica de negocio
-    registerSocketEvents(socket)
+    registerSocketEvents(socket, io)
 
     // PASO 4: Enviar confirmación de conexión al cliente
     socket.emit('system:connected', { ok: true })
