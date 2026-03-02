@@ -7,12 +7,11 @@ import { createSocketServer } from './socket/socket.server'
 // Aquí se inicia HTTP, Socket.IO y cualquier proceso de bootstrap.
 const app = createApp()
 const httpServer = createServer(app)
-const host = '0.0.0.0'
 
 createSocketServer(httpServer)
 
-httpServer.listen(env.port, host, () => {
-  console.log(`Server is running on http://${host}:${env.port}`)
+httpServer.listen(env.port, () => {
+  console.log(`Server is running on http://localhost:${env.port}`)
 })
 
 export { app, httpServer }
