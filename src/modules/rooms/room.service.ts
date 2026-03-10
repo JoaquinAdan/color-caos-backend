@@ -15,7 +15,7 @@ export const DEFAULT_GAME_CONFIG: GameConfig = {
   preGameCountdownSeconds: 5,
   totalRounds: 6,
   cardsPerRound: 5,
-  answerWindowSeconds: 2,
+  answerWindowSeconds: 1.5,
   scoringWindowSeconds: 3,
   availableColors: ['red', 'blue', 'green', 'yellow', 'orange', 'pink', 'purple', 'cyan'],
   mode: GameMode.MATCH_TARGET,
