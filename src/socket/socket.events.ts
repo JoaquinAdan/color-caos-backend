@@ -467,7 +467,7 @@ export const registerSocketEvents = (
     try {
       console.log(`[room:update-settings] Solicitud recibida de cliente: ${socket.id}`)
 
-      const { roomCode, maxPlayers, hostPlayerId, gameMode } = payload
+      const { roomCode, maxPlayers, hostPlayerId, gameMode, answerWindowSeconds } = payload
 
       if (!roomCode) {
         throw new Error('El código de la sala es requerido')
@@ -485,12 +485,16 @@ export const registerSocketEvents = (
         throw new Error('El modo de juego es inválido')
       }
 
+      if (answerWindowSeconds === undefined) {
+        throw new Error('El tiempo de respuesta es requerido')
+      }
+
       if (!socket.data.playerId || socket.data.playerId !== hostPlayerId) {
         throw new Error('Sesión inválida para actualizar configuración')
       }
 
       // PASO 1: Llamar al servicio que actualiza la configuración de la sala
-      const room = await updateRoomSettings(roomCode, maxPlayers, hostPlayerId, gameMode)
+      const room = await updateRoomSettings(roomCode, maxPlayers, hostPlayerId, gameMode, answerWindowSeconds)
 
       console.log(`[room:update-settings] Configuración de sala ${roomCode} actualizada exitosamente`)
 

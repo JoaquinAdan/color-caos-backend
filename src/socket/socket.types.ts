@@ -108,7 +108,7 @@ export interface ClientToServerEvents {
 
   // Salas - Actualizar configuración de la sala
   'room:update-settings': (
-    payload: { roomCode: string; maxPlayers: number; hostPlayerId: string; gameMode: GameMode },
+    payload: { roomCode: string; maxPlayers: number; hostPlayerId: string; gameMode: GameMode; answerWindowSeconds: number },
     callback?: (response: {
       success: boolean
       room?: RoomWithPlayers

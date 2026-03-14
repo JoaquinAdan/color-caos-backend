@@ -278,10 +278,11 @@ export const leaveRoom = async (roomCode: RoomCode, playerId: string): Promise<{
  * Actualiza la configuración de una sala (solo el host puede hacerlo)
  */
 export const updateRoomSettings = async (
-  roomCode: RoomCode, 
+  roomCode: RoomCode,
   maxPlayers: number,
   hostPlayerId: string,
-  gameMode: GameMode
+  gameMode: GameMode,
+  answerWindowSeconds: number
 ): Promise<RoomWithPlayers> => {
   // Obtener la sala por código
   const room = await getRoomByCode(roomCode)
@@ -308,9 +309,15 @@ export const updateRoomSettings = async (
     throw new Error('Modo de juego inválido')
   }
 
+  const validSteps = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
+  if (!validSteps.includes(answerWindowSeconds)) {
+    throw new Error('El tiempo de respuesta debe ser entre 0.5 y 5 en pasos de 0.5')
+  }
+
   // Actualizar la configuración
   room.maxPlayers = maxPlayers
   room.gameConfig.mode = gameMode
+  room.gameConfig.answerWindowSeconds = answerWindowSeconds
 
   // Actualizar la sala en Redis
   await saveRoom(room)
